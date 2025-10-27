@@ -135,4 +135,8 @@ function minify_js($input) {
         ),
     $input);
 }
+
+$html = file_get_contents('https://raw.githubusercontent.com/huggla/minifytest/refs/heads/main/index.html');
+$minified = minify_html($html);
+echo $minified;
 ?>
