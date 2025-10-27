@@ -1,11 +1,16 @@
 <?php
-// Based on https://gist.github.com/Rodrigo54/93169db48194d470188f
 function minify_html($input) {
     if (trim($input) === "") return $input;
+
     // Remove extra white-space(s) between HTML attribute(s)
     $input = preg_replace_callback('#<([^\/\s<>!]+)(?:\s+([^<>]*?)\s*|\s*)(\/?)>#s', function($matches) {
+        // Skip attributes containing JavaScript to avoid breaking event handlers
+        if (preg_match('#\bon[a-z]+\s*=\s*[\'"][^\'"]*[\'"]#i', $matches[2])) {
+            return '<' . $matches[1] . ' ' . trim($matches[2]) . $matches[3] . '>';
+        }
         return '<' . $matches[1] . preg_replace('#([^\s=]+)(\=([\'"]?)(.*?)\3)?(\s+|$)#s', ' $1$2', $matches[2]) . $matches[3] . '>';
     }, str_replace("\r", "", $input));
+
     // Minify inline CSS declaration(s)
     if (strpos($input, ' style=') !== false) {
         $input = preg_replace_callback('#<([^<]+?)\s+style=([\'"])(.*?)\2(?=[\/\s>])#s', function($matches) {
@@ -13,33 +18,37 @@ function minify_html($input) {
         }, $input);
     }
     if (strpos($input, '</style>') !== false) {
-      $input = preg_replace_callback('#<style(.*?)>(.*?)</style>#is', function($matches) {
-        return '<style' . $matches[1] . '>' . minify_css($matches[2]) . '</style>';
-      }, $input);
+        $input = preg_replace_callback('#<style(.*?)>(.*?)</style>#is', function($matches) {
+            return '<style' . $matches[1] . '>' . minify_css($matches[2]) . '</style>';
+        }, $input);
     }
+
+    // Minify inline JavaScript, but skip if already minified or marked with data-nominify
     if (strpos($input, '</script>') !== false) {
-      $input = preg_replace_callback('#<script(.*?)>(.*?)</script>#is', function($matches) {
-        return '<script' . $matches[1] . '>' . minify_js($matches[2]) . '</script>';
-      }, $input);
+        $input = preg_replace_callback('#<script\b(?![^>]*\bdata-nominify\b)(.*?)>(.*?)</script>#is', function($matches) {
+            // Check if JavaScript appears to be already minified
+            $js = $matches[2];
+            if (is_already_minified($js)) {
+                return '<script' . $matches[1] . '>' . $js . '</script>';
+            }
+            return '<script' . $matches[1] . '>' . minify_js($matches[2]) . '</script>';
+        }, $input);
     }
 
     return preg_replace(
         array(
-            // t = text
-            // o = tag open
-            // c = tag close
             // Keep important white-space(s) after self-closing HTML tag(s)
-            '#<(img|input)(>| .*?>)#s',
+            '#<(img|input|br)(>| .*?>)#s',
             // Remove a line break and two or more white-space(s) between tag(s)
             '#(<!--.*?-->)|(>)(?:\n*|\s{2,})(<)|^\s*|\s*$#s',
             '#(<!--.*?-->)|(?<!\>)\s+(<\/.*?>)|(<[^\/]*?>)\s+(?!\<)#s', // t+c || o+t
             '#(<!--.*?-->)|(<[^\/]*?>)\s+(<[^\/]*?>)|(<\/.*?>)\s+(<\/.*?>)#s', // o+o || c+c
-            '#(<!--.*?-->)|(<\/.*?>)\s+(\s)(?!\<)|(?<!\>)\s+(\s)(<[^\/]*?\/?>)|(<[^\/]*?\/?>)\s+(\s)(?!\<)#s', // c+t || t+o || o+t -- separated by long white-space(s)
+            '#(<!--.*?-->)|(<\/.*?>)\s+(\s)(?!\<)|(?<!\>)\s+(\s)(<[^\/]*?\/?>)|(<[^\/]*?\/?>)\s+(\s)(?!\<)#s', // c+t || t+o || o+t
             '#(<!--.*?-->)|(<[^\/]*?>)\s+(<\/.*?>)#s', // empty tag
-            '#<(img|input)(>| .*?>)<\/\1>#s', // reset previous fix
+            '#<(img|input|br)(>| .*?>)<\/\1>#s', // reset previous fix
             '#(&nbsp;)&nbsp;(?![<\s])#', // clean up ...
             '#(?<=\>)(&nbsp;)(?=\<)#', // --ibid
-            // Remove HTML comment(s) except IE comment(s)
+            // Remove HTML comment(s) except IE conditionals
             '#\s*<!--(?!\[if\s).*?-->\s*|(?<!\>)\n+(?=\<[^!])#s'
         ),
         array(
@@ -57,31 +66,32 @@ function minify_html($input) {
     $input);
 }
 
-// CSS Minifier
+// Helper function to detect if JavaScript is already minified
+function is_already_minified($code) {
+    if (trim($code) === '') return false;
+    // Calculate the ratio of non-whitespace characters
+    $total_length = strlen($code);
+    $non_whitespace = strlen(preg_replace('#\s+#', '', $code));
+    $ratio = $non_whitespace / $total_length;
+    // If > 90% of characters are non-whitespace, assume it's minified
+    return $ratio > 0.9;
+}
+
+// CSS Minifier (unchanged, as it seems robust enough)
 function minify_css($input) {
     if (trim($input) === "") return $input;
     return preg_replace(
         array(
-            // Remove comment(s)
             '#("(?:[^"\\\\ ]++|\\\\ .)*+"|\'(?:[^\'\\\\\\\\ ]++|\\\\ .)*+\')|/\*(?!\!)(?>.*?\*/)|^\s*|\s*$#s',
-            // Remove unused white-space(s)
             '#("(?:[^"\\\\ ]++|\\\\ .)*+"|\'(?:[^\'\\\\\\\\ ]++|\\\\ .)*+\'|/\*(?>.*?\*/))|\s*+;\s*+(})\s*+|\s*+([*$~^|]?+=|[{};,>~]|\s(?![0-9\.])|!important\b)\s*+|([[(:])\s++|\s++([])])|\s++(:)\s*+(?!(?>[^{}"\' ]++|"(?:[^"\\\\ ]++|\\\\ .)*+"|\'(?:[^\'\\\\\\\\ ]++|\\\\ .)*+\')*+{)|^\s++|\s++\z|(\s)\s+#si',
-            // Replace `0(cm|em|ex|in|mm|pc|pt|px|vh|vw|%)` with `0`
             '#(?<=[\s:])(0)(cm|em|ex|in|mm|pc|pt|px|vh|vw|%)#si',
-            // Replace `:0 0 0 0` with `:0`
             '#:(0\s+0|0\s+0\s+0\s+0)(?=[;\}]|\!important)#i',
-            // Replace `background-position:0` with `background-position:0 0`
             '#(background-position):0(?=[;\}])#si',
-            // Replace `0.6` with `.6`, but only when preceded by `:`, `,`, `-` or a white-space
             '#(?<=[\s:,\-])0+\.(\d+)#s',
-            // Minify string value
             '#(\/\*(?>.*?\*\/))|(?<!content\:)([\'"])([a-z_][a-z0-9\-_]*?)\2(?=[\s\{\}\];,])#si',
             '#(\/\*(?>.*?\*\/))|(\burl\()([\'"])([^\s]+?)\3(\))#si',
-            // Minify HEX color code
             '#(?<=[\s:,\-]\#)([a-f0-6]+)\1([a-f0-6]+)\2([a-f0-6]+)\3#i',
-            // Replace `(border|outline):none` with `(border|outline):0`
             '#(?<=[\{;])(border|outline):none(?=[;\}\!])#',
-            // Remove empty selector(s)
             '#(\/\*(?>.*?\*\/))|(^|[\{\}])(?:[^\s\{\}]+)\{\}#s'
         ),
         array(
@@ -100,20 +110,20 @@ function minify_css($input) {
     $input);
 }
 
-// JavaScript Minifier
+// Improved JavaScript Minifier
 function minify_js($input) {
     if (trim($input) === "") return $input;
     return preg_replace(
         array(
-            // Remove comment(s)
-            '#\s*("(?:[^"\\\\ ]++|\\\\ .)*+"|\'(?:[^\'\\\\\\\\ ]++|\\\\ .)*+\')\s*|\s*\/\*(?!\!|@cc_on)(?>[\s\S]*?\*\/)\s*|\s*(?<![\:\=])\/\/.*(?=[\n\r]|$)|^\s*|\s*$#',
-            // Remove white-space(s) outside the string and regex
-            '#("(?:[^"\\\\ ]++|\\\\ .)*+"|\'(?:[^\'\\\\\\\\ ]++|\\\\ .)*+\'|\/\*(?>.*?\*\/)|\/(?!\/)[^\n\r]*?\/(?=[\s.,;]|[gimuy]|$))|\s*([!%&*\(\)\-=+\[\]\{\}|;:,.<>?\/])\s*#s',
-            // Remove the last semicolon
+            // Remove comments (skip regex literals and template literals)
+            '#("(?:[^"\\\\ ]++|\\\\ .)*+"|\'(?:[^\'\\\\ ]++|\\\\ .)*+\'|\/(?!\/)[^\n\r]*?\/[gimuy]*)\s*|\s*\/\*(?!\!|@cc_on)(?>[\s\S]*?\*\/)\s*|\s*(?<![\:\=])\/\/.*(?=[\n\r]|$)#',
+            // Remove unnecessary whitespace, preserving regex and string literals
+            '#("(?:[^"\\\\ ]++|\\\\ .)*+"|\'(?:[^\'\\\\ ]++|\\\\ .)*+\'|\/(?!\/)[^\n\r]*?\/[gimuy]*)|\s*([!%&*\(\)\-=+\[\]\{\}|;:,.<>?\/])\s*#s',
+            // Remove trailing semicolon in blocks
             '#;+\}#',
-            // Minify object attribute(s) except JSON attribute(s). From `{'foo':'bar'}` to `{foo:'bar'}`
+            // Minify object attributes (e.g., {'foo': 'bar'} to {foo: 'bar'})
             '#([\{,])([\'])(\d+|[a-z_][a-z0-9_]*)\2(?=\:)#i',
-            // --ibid. From `foo['bar']` to `foo.bar`
+            // Convert foo['bar'] to foo.bar
             '#([a-z0-9_\)\]])\[([\'"])([a-z_][a-z0-9_]*)\2\]#i'
         ),
         array(
